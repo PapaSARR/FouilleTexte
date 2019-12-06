@@ -10,22 +10,23 @@ from nltk.corpus import stopwords
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from nltk import word_tokenize
-
 import spacy
 from gensim.models import KeyedVectors as kv
-
 from datatools import load_dataset
+from nltk.stem import WordNetLemmatizer
+
 
 #stopset = sorted(set(stopwords.words('french')))
 nlp = spacy.load('fr')
+lemmatizer = WordNetLemmatizer()
 
-embfile = "../resources/frWac_non_lem_no_postag_no_phrase_200_skip_cut100.bin"
+#embfile = "../resources/frWac_non_lem_no_postag_no_phrase_200_skip_cut100.bin"
 # wv : kv = kv.load_word2vec_format(embfile, binary=True, encoding='UTF-8', unicode_errors='ignore')
 
 
 class Classifier:
     """The Classifier"""
-
+    
     def __init__(self):
         self.labelset = None #Sa valeur est calculée dans la méthode train_on_data ligne 97
         self.label_binarizer = LabelBinarizer()
@@ -34,28 +35,48 @@ class Classifier:
         self.batchsize = 20 #On peut aussi modifier le batchsize
         self.max_features = 14000 #Modification possible de cettte variable pour améliorer
         # create the vectorizer
-        self.vectorizer = TfidfVectorizer(
+        self.vectorizer = CountVectorizer(
             max_features=self.max_features,
             strip_accents="unicode",
             analyzer="word",
-            tokenizer=self.mytokenize,
+            tokenizer=self.mytokenize_nltk,
             stop_words=None, 
             ngram_range=(1, 2), #On peut travailler avec (1,1) pour voir 
             binary=True, #Modification possible en true
             preprocessor=None
         )
 
-    def mytokenize(self, text):
+    def mytokenize_nltk(self, text):
         """Customized tokenizer.
         Here you can add other linguistic processing and generate more normalized features
         """
-        doc = nlp(text)
-        tokens = [t.lemma_ for sent in doc.sents for t in sent if t.pos_ != "PUNCT" ] #On peut utiliser la lemmentisation en remplaçant t.text par t.lemma_, On peut aussi tenir compte des majuscules en enlevant le lower
-        #tokens = [t for t in tokens if t not in self.stopset] #Utilisation de stopwords, décommenter cette ligne
+        tokens = word_tokenize(text, language='french')
+        tokens = [lemmatizer.lemmatize(t.lower()) for t in tokens if t not in "',;.?!:()#_-+/\\"]
+        # tokens = [t for t in tokens if t not in self.stopset]
         return tokens
-
+    
+    def load_embs(self):
+        emb_filename = "../resources/frWac_non_lem_no_postag_no_phrase_200_skip_cut100.bin"
+        emb = kv.load_word2vec_format(emb_filename, binary=True, encoding='UTF-8', unicode_errors='ignore') #Les embbedings sont chargés en mémoire
+        emb_dim = emb.vector_size #On récupère la taille des vecteurs
+    
+        # pretrained word embeddings
+        padid = 0 #indice des mots artificiels, les mots artificiels permettent d'avoir des vecteurs de même dimension pour toutes les phrases
+        oovid = 1 #indice des mots inconnus, out of vocabulary
+        oovVector = np.zeros(emb_dim) #Vecteur des mots inconnues initialisé à null (que des zéros)
+        padVector = np.zeros(emb_dim) #Vecteur des mots artificiels initialisé à null (que des zéros)
+        emb_weights = emb.vectors	#On récupère la matrice ( vecteur ayant comme élément les vecteurs de mots embbeding
+        emb_weights = np.insert(emb_weights, padid, padVector, axis=0) #On insère le Vecteur des mots artificiels à l'indice 0
+        emb_weights = np.insert(emb_weights, oovid, oovVector, axis=0) #On insère le Vecteur des mots inconnues à l'indice 1
+        word2idx = {word:(emb.vocab[word].index + 2) for word in emb.vocab} #On parcoure tous les mots de la matrice
+        word2idx['<PAD>'] = padid
+        word2idx['<OOV>'] = oovid
+    
+        return word2idx, emb_weights, emb_dim, padid, oovid
+    
     def feature_count(self):
-        return len(self.vectorizer.vocabulary_)
+        word2idx, emb_weights, emb_dim, padid, oovid = self.load_embs()
+        return len(self.vectorizer.vocabulary_) + emb_dim
 
     def create_model(self):
         """Create a neural network model and return it.
@@ -81,7 +102,19 @@ class Classifier:
 
 
     def vectorize(self, texts):
-        return self.vectorizer.transform(texts).toarray()
+        word2idx, emb_weights, emb_dim, padid, oovid = self.load_embs()
+        X_v1 = self.vectorizer.transform(texts)
+        X_v1 = X_v1.toarray()
+        X_v2 = np.zeros((len(texts),emb_dim), dtype=np.float32)
+        for i, text in enumerate(texts):
+            tokens = self.mytokenize_nltk(text)
+            token_ids = [word2idx[token] if token in word2idx else oovid for token in tokens]
+            token_vectors = [ emb_weights[token_id] for token_id in token_ids]
+            text_vector = np.mean(token_vectors, axis=0)
+            X_v2[i] = text_vector
+        # return X_v2
+        return np.concatenate([X_v1, X_v2], axis=1)
+        #return X_v1
 
 
     def train_on_data(self, texts, labels, valtexts=None, vallabels=None):
