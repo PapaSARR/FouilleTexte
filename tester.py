@@ -1,9 +1,9 @@
 import sys, time
 import numpy as np
-from scipy import stats
 
 from datatools import load_dataset
-from classifier_bow import Classifier
+#from classifier_bow import Classifier
+from my_classifier_emb import Classifier
 # from eval import eval_file, eval_list, load_label_output
 
 def set_reproducible():
